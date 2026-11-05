@@ -1,0 +1,6 @@
+gradio>=6.0
+easyocr>=1.7
+opencv-python-headless>=4.8
+numpy>=1.24
+pypdfium2>=4.30
+Pillow>=10.0
