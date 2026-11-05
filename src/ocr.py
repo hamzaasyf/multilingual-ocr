@@ -128,6 +128,8 @@ class MultiScriptOCR:
         if script_id not in self._readers:
             import easyocr  # imported here so the rest of the module works without it
 
+            if not self.gpu:
+                _no_pinned_memory()
             self._readers[script_id] = easyocr.Reader(
                 list(SCRIPTS[script_id].easyocr_langs), gpu=self.gpu, verbose=False
             )
@@ -199,6 +201,41 @@ class MultiScriptOCR:
         lines = reading_order(lines)
         assign_languages(lines)
         return {"lines": lines, "scale": scale, "timings": {"detection": t_det, "recognition": t_rec}}
+
+
+def _no_pinned_memory() -> None:
+    """Stop EasyOCR asking for GPU-pinned memory when running on CPU.
+
+    EasyOCR's recogniser always builds its DataLoader with pin_memory=True, and
+    PyTorch then pins batches whenever it thinks a GPU exists. On Hugging Face
+    ZeroGPU hardware a GPU is reported but not attached outside @spaces.GPU
+    calls, so pinning fails with "No CUDA GPUs are available".
+    """
+    import types
+
+    import easyocr.recognition as rec
+    import torch
+
+    if getattr(rec, "_cpu_loader_patched", False):
+        return
+
+    class CPULoader(torch.utils.data.DataLoader):
+        def __init__(self, *args, **kwargs):
+            kwargs["pin_memory"] = False
+            super().__init__(*args, **kwargs)
+
+    # easyocr.recognition calls torch.utils.data.DataLoader; give that module its own
+    # view of torch where only DataLoader is swapped, leaving the real torch untouched
+    data = types.SimpleNamespace(**{k: getattr(torch.utils.data, k) for k in dir(torch.utils.data)
+                                    if not k.startswith("__")})
+    data.DataLoader = CPULoader
+    utils = types.SimpleNamespace(**{k: getattr(torch.utils, k) for k in dir(torch.utils) if not k.startswith("__")})
+    utils.data = data
+    view = types.ModuleType("torch")
+    view.__dict__.update({k: v for k, v in vars(torch).items() if not k.startswith("__")})
+    view.utils = utils
+    rec.torch = view
+    rec._cpu_loader_patched = True
 
 
 def reading_order(lines: list[Line]) -> list[Line]:
